@@ -98,6 +98,9 @@ class TextEditorComponent
     @disposables.add scrollbarStyle.onDidChangePreferredScrollbarStyle @refreshScrollbars
 
     @disposables.add atom.views.pollDocument(@pollDOM)
+    @disposables.add @presenter.onWillMeasure (state) =>
+      @linesComponent.updateSync(state)
+      @linesComponent.getDomNode().getBoundingClientRect() # trigger relayout
 
     @updateSync()
     @checkForVisibilityChange()

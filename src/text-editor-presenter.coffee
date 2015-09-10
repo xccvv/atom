@@ -44,6 +44,9 @@ class TextEditorPresenter
   onDidUpdateState: (callback) ->
     @emitter.on 'did-update-state', callback
 
+  onWillMeasure: (callback) ->
+    @emitter.on 'will-measure', callback
+
   emitDidUpdateState: ->
     @emitter.emit "did-update-state" if @isBatching()
 
@@ -67,11 +70,17 @@ class TextEditorPresenter
   getState: ->
     @updating = true
 
-    @updateContentDimensions()
+    @updateVerticalDimensions()
     @updateScrollbarDimensions()
     @updateStartRow()
     @updateEndRow()
     @updateCommonGutterState()
+    @updateLineDecorations() if @shouldUpdateDecorations
+    @updateTilesState() if @shouldUpdateLinesState or @shouldUpdateLineNumbersState
+
+    @emitter.emit "will-measure", @state
+
+    @updateHorizontalDimensions()
 
     @updateFocusedState() if @shouldUpdateFocusedState
     @updateHeightState() if @shouldUpdateHeightState
@@ -80,8 +89,7 @@ class TextEditorPresenter
     @updateScrollbarsState() if @shouldUpdateScrollbarsState
     @updateHiddenInputState() if @shouldUpdateHiddenInputState
     @updateContentState() if @shouldUpdateContentState
-    @updateDecorations() if @shouldUpdateDecorations
-    @updateTilesState() if @shouldUpdateLinesState or @shouldUpdateLineNumbersState
+    @updateHighlightDecorations() if @shouldUpdateDecorations
     @updateCursorsState() if @shouldUpdateCursorsState
     @updateOverlaysState() if @shouldUpdateOverlaysState
     @updateLineNumberGutterState() if @shouldUpdateLineNumberGutterState
@@ -640,11 +648,17 @@ class TextEditorPresenter
       @scrollHeight = scrollHeight
       @updateScrollTop()
 
-  updateContentDimensions: ->
+  updateVerticalDimensions: ->
     if @lineHeight?
       oldContentHeight = @contentHeight
       @contentHeight = @lineHeight * @model.getScreenLineCount()
 
+    if @contentHeight isnt oldContentHeight
+      @updateHeight()
+      @updateScrollbarDimensions()
+      @updateScrollHeight()
+
+  updateHorizontalDimensions: ->
     if @baseCharacterWidth?
       oldContentWidth = @contentWidth
       clip = @model.tokenizedLineForScreenRow(@model.getLongestScreenRow())?.isSoftWrapped()
@@ -652,14 +666,13 @@ class TextEditorPresenter
       @contentWidth += @scrollLeft
       @contentWidth += 1 unless @model.isSoftWrapped() # account for cursor width
 
-    if @contentHeight isnt oldContentHeight
-      @updateHeight()
-      @updateScrollbarDimensions()
-      @updateScrollHeight()
-
     if @contentWidth isnt oldContentWidth
       @updateScrollbarDimensions()
       @updateScrollWidth()
+
+  updateContentDimensions: ->
+    @updateVerticalDimensions()
+    @updateHorizontalDimensions()
 
   updateClientHeight: ->
     return unless @height? and @horizontalScrollbarHeight?
@@ -1143,28 +1156,40 @@ class TextEditorPresenter
 
     @emitDidUpdateState()
 
-  updateDecorations: ->
+  updateLineDecorations: ->
     @rangesByDecorationId = {}
     @lineDecorationsByScreenRow = {}
     @lineNumberDecorationsByScreenRow = {}
     @customGutterDecorationsByGutterNameAndScreenRow = {}
+
+    return unless 0 <= @startRow <= @endRow <= Infinity
+
+    for markerId, decorations of @model.decorationsForScreenRowRange(@startRow, @endRow - 1)
+      range = @model.getMarker(markerId).getScreenRange()
+      for decoration in decorations when decoration.isType('line') or decoration.isType('gutter')
+        @addToLineDecorationCaches(decoration, range)
+
+    return
+
+  updateHighlightDecorations: ->
     @visibleHighlights = {}
 
     return unless 0 <= @startRow <= @endRow <= Infinity
 
     for markerId, decorations of @model.decorationsForScreenRowRange(@startRow, @endRow - 1)
       range = @model.getMarker(markerId).getScreenRange()
-      for decoration in decorations
-        if decoration.isType('line') or decoration.isType('gutter')
-          @addToLineDecorationCaches(decoration, range)
-        else if decoration.isType('highlight')
-          @updateHighlightState(decoration, range)
+      for decoration in decorations when decoration.isType('highlight')
+        @updateHighlightState(decoration, range)
 
     for tileId, tileState of @state.content.tiles
       for id, highlight of tileState.highlights
         delete tileState.highlights[id] unless @visibleHighlights[tileId]?[id]?
 
     return
+
+  updateDecorations: ->
+    @updateLineDecorations()
+    @updateHighlightDecorations()
 
   removeFromLineDecorationCaches: (decoration) ->
     @removePropertiesFromLineDecorationCaches(decoration.id, decoration.getProperties())
