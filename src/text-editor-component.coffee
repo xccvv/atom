@@ -102,6 +102,7 @@ class TextEditorComponent
       @linesComponent.updateSync(state)
       @linesComponent.getDomNode().getBoundingClientRect() # trigger relayout
 
+    @presenter.setLinesComponent(@linesComponent)
     @updateSync()
     @checkForVisibilityChange()
 

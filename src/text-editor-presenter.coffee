@@ -2,6 +2,9 @@
 {Point, Range} = require 'text-buffer'
 _ = require 'underscore-plus'
 Decoration = require './decoration'
+TokenIterator = require './token-iterator'
+AcceptFilter = {acceptNode: -> NodeFilter.FILTER_ACCEPT}
+rangeForMeasurement = document.createRange()
 
 module.exports =
 class TextEditorPresenter
@@ -22,6 +25,7 @@ class TextEditorPresenter
     @gutterWidth ?= 0
     @tileSize ?= 6
 
+    @tokenIterator = new TokenIterator
     @disposables = new CompositeDisposable
     @emitter = new Emitter
     @visibleHighlights = {}
@@ -363,6 +367,15 @@ class TextEditorPresenter
 
       visibleTiles[startRow] = true
       zIndex--
+
+    startRow = @tileForRow(@model.getLongestScreenRow())
+    endRow = Math.min(@model.getScreenLineCount(), startRow + @tileSize)
+    tile = @state.content.tiles[startRow] ?= {}
+    tile.top = startRow * @lineHeight
+    tile.display = "block"
+    tile.highlights ?= {}
+
+    @updateLinesState(tile, startRow, endRow) if @shouldUpdateLinesState
 
     if @mouseWheelScreenRow? and @model.tokenizedLineForScreenRow(@mouseWheelScreenRow)?
       mouseWheelTile = @tileForRow(@mouseWheelScreenRow)
@@ -1043,6 +1056,8 @@ class TextEditorPresenter
   hasPixelPositionRequirements: ->
     @lineHeight? and @baseCharacterWidth?
 
+  setLinesComponent: (@linesComponent) ->
+
   pixelPositionForScreenPosition: (screenPosition, clip=true) ->
     screenPosition = Point.fromObject(screenPosition)
     screenPosition = @model.clipScreenPosition(screenPosition) if clip
@@ -1052,31 +1067,69 @@ class TextEditorPresenter
     baseCharacterWidth = @baseCharacterWidth
 
     top = targetRow * @lineHeight
-    left = 0
-    column = 0
+    left = @leftPixelPositionForScreenPosition(targetRow, targetColumn)
+    {top, left}
 
-    iterator = @model.tokenizedLineForScreenRow(targetRow).getTokenIterator()
-    while iterator.next()
-      characterWidths = @getScopedCharacterWidths(iterator.getScopes())
+  leftPixelPositionForScreenPosition: (row, column) ->
+    tokenizedLine = @model.tokenizedLineForScreenRow(row)
+    tileRow = @tileForRow(row)
+    lineNode = @linesComponent?.getLineNode(tileRow, tokenizedLine.id)
+    return 0 unless lineNode?
 
-      valueIndex = 0
-      text = iterator.getText()
-      while valueIndex < text.length
-        if iterator.isPairedCharacter()
+    iterator = document.createNodeIterator(lineNode, NodeFilter.SHOW_TEXT, AcceptFilter)
+    charIndex = 0
+
+    @tokenIterator.reset(tokenizedLine)
+    while @tokenIterator.next()
+      text = @tokenIterator.getText()
+      textIndex = 0
+      while textIndex < text.length
+        if @tokenIterator.isPairedCharacter()
           char = text
           charLength = 2
-          valueIndex += 2
+          textIndex += 2
         else
-          char = text[valueIndex]
+          char = text[textIndex]
           charLength = 1
-          valueIndex++
+          textIndex++
 
-        break if column is targetColumn
+        continue if char is '\0'
 
-        left += characterWidths[char] ? baseCharacterWidth unless char is '\0'
-        column += charLength
+        unless textNode?
+          textNode = iterator.nextNode()
+          textNodeLength = textNode.textContent.length
+          textNodeIndex = 0
+          nextTextNodeIndex = textNodeLength
 
-    {top, left}
+        while nextTextNodeIndex <= charIndex
+          textNode = iterator.nextNode()
+          textNodeLength = textNode.textContent.length
+          textNodeIndex = nextTextNodeIndex
+          nextTextNodeIndex = textNodeIndex + textNodeLength
+
+        if charIndex is column
+          indexWithinToken = charIndex - textNodeIndex
+          return @leftPixelPositionForCharInTextNode(textNode, indexWithinToken) - lineNode.getBoundingClientRect().left
+
+        charIndex += charLength
+
+    if textNode?
+      @leftPixelPositionForCharInTextNode(textNode, textNode.textContent.length) - lineNode.getBoundingClientRect().left
+    else
+      0
+
+  leftPixelPositionForCharInTextNode: (textNode, charIndex) ->
+    rangeForMeasurement.setEnd(textNode, textNode.textContent.length)
+
+    if charIndex is 0
+      rangeForMeasurement.setStart(textNode, 0)
+      rangeForMeasurement.getBoundingClientRect().left
+    else if charIndex is textNode.textContent.length
+      rangeForMeasurement.setStart(textNode, 0)
+      rangeForMeasurement.getBoundingClientRect().right
+    else
+      rangeForMeasurement.setStart(textNode, charIndex)
+      rangeForMeasurement.getBoundingClientRect().left
 
   hasPixelRectRequirements: ->
     @hasPixelPositionRequirements() and @scrollWidth?
