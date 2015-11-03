@@ -126,8 +126,7 @@ class ThemeManager
   # required stylesheet.
   requireStylesheet: (stylesheetPath) ->
     if fullPath = @resolveStylesheet(stylesheetPath)
-      content = @loadStylesheet(fullPath)
-      @applyStylesheet(fullPath, content)
+      @loadStylesheetAsync(fullPath).then (content) => @applyStylesheet(fullPath, content)
     else
       throw new Error("Could not find a file at path '#{stylesheetPath}'")
 
@@ -170,13 +169,13 @@ class ThemeManager
     @userStyleSheetDisposable = @styleManager.addStyleSheet(userStylesheetContents, sourcePath: userStylesheetPath, priority: 2)
 
   loadBaseStylesheets: ->
-    @requireStylesheet('../static/bootstrap')
-    @reloadBaseStylesheets()
+    @requireStylesheet('../static/bootstrap').then =>
+      @reloadBaseStylesheets()
 
   reloadBaseStylesheets: ->
-    @requireStylesheet('../static/atom')
-    if nativeStylesheetPath = fs.resolveOnLoadPath(process.platform, ['css', 'less'])
-      @requireStylesheet(nativeStylesheetPath)
+    @requireStylesheet('../static/atom').then =>
+      if nativeStylesheetPath = fs.resolveOnLoadPath(process.platform, ['css', 'less'])
+        @requireStylesheet(nativeStylesheetPath)
 
   stylesheetElementForId: (id) ->
     document.head.querySelector("atom-styles style[source-path=\"#{id}\"]")
@@ -192,6 +191,13 @@ class ThemeManager
       @loadLessStylesheet(stylesheetPath, importFallbackVariables)
     else
       fs.readFileSync(stylesheetPath, 'utf8')
+
+  loadStylesheetAsync: (stylesheetPath, importFallbackVariables) ->
+    new Promise (resolve) =>
+      if path.extname(stylesheetPath) is '.less'
+        resolve(@loadLessStylesheet(stylesheetPath, importFallbackVariables))
+      else
+        resolve(fs.readFileSync(stylesheetPath, 'utf8'))
 
   loadLessStylesheet: (lessStylesheetPath, importFallbackVariables=false) ->
     unless @lessCache?

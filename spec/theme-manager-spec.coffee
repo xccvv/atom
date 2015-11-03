@@ -169,72 +169,83 @@ describe "atom.themes", ->
       cssPath = atom.project.getDirectories()[0]?.resolve('css.css')
       lengthBefore = document.querySelectorAll('head style').length
 
-      atom.themes.requireStylesheet(cssPath)
-      expect(document.querySelectorAll('head style').length).toBe lengthBefore + 1
+      waitsForPromise -> atom.themes.requireStylesheet(cssPath)
+      runs ->
+        expect(document.querySelectorAll('head style').length).toBe lengthBefore + 1
 
-      expect(styleElementAddedHandler).toHaveBeenCalled()
+        expect(styleElementAddedHandler).toHaveBeenCalled()
 
-      element = document.querySelector('head style[source-path*="css.css"]')
-      expect(element.getAttribute('source-path')).toBe atom.themes.stringToId(cssPath)
-      expect(element.textContent).toBe fs.readFileSync(cssPath, 'utf8')
+        element = document.querySelector('head style[source-path*="css.css"]')
+        expect(element.getAttribute('source-path')).toBe atom.themes.stringToId(cssPath)
+        expect(element.textContent).toBe fs.readFileSync(cssPath, 'utf8')
 
-      # doesn't append twice
-      styleElementAddedHandler.reset()
-      atom.themes.requireStylesheet(cssPath)
-      expect(document.querySelectorAll('head style').length).toBe lengthBefore + 1
-      expect(styleElementAddedHandler).not.toHaveBeenCalled()
+        # doesn't append twice
+        styleElementAddedHandler.reset()
+      waitsForPromise -> atom.themes.requireStylesheet(cssPath)
+      runs ->
+        expect(document.querySelectorAll('head style').length).toBe lengthBefore + 1
+        expect(styleElementAddedHandler).not.toHaveBeenCalled()
 
-      for styleElement in document.querySelectorAll('head style[id*="css.css"]')
-        styleElement.remove()
+        for styleElement in document.querySelectorAll('head style[id*="css.css"]')
+          styleElement.remove()
 
     it "synchronously loads and parses less files at the given path and installs a style tag for it in the head", ->
       lessPath = atom.project.getDirectories()[0]?.resolve('sample.less')
       lengthBefore = document.querySelectorAll('head style').length
-      atom.themes.requireStylesheet(lessPath)
-      expect(document.querySelectorAll('head style').length).toBe lengthBefore + 1
+      waitsForPromise -> atom.themes.requireStylesheet(lessPath)
+      runs ->
+        expect(document.querySelectorAll('head style').length).toBe lengthBefore + 1
 
-      element = document.querySelector('head style[source-path*="sample.less"]')
-      expect(element.getAttribute('source-path')).toBe atom.themes.stringToId(lessPath)
-      expect(element.textContent).toBe """
-      #header {
-        color: #4d926f;
-      }
-      h2 {
-        color: #4d926f;
-      }
+        element = document.querySelector('head style[source-path*="sample.less"]')
+        expect(element.getAttribute('source-path')).toBe atom.themes.stringToId(lessPath)
+        expect(element.textContent).toBe """
+        #header {
+          color: #4d926f;
+        }
+        h2 {
+          color: #4d926f;
+        }
 
-      """
+        """
 
       # doesn't append twice
-      atom.themes.requireStylesheet(lessPath)
-      expect(document.querySelectorAll('head style').length).toBe lengthBefore + 1
-      for styleElement in document.querySelectorAll('head style[id*="sample.less"]')
-        styleElement.remove()
+      waitsForPromise -> atom.themes.requireStylesheet(lessPath)
+      runs ->
+        expect(document.querySelectorAll('head style').length).toBe lengthBefore + 1
+        for styleElement in document.querySelectorAll('head style[id*="sample.less"]')
+          styleElement.remove()
 
     it "supports requiring css and less stylesheets without an explicit extension", ->
-      atom.themes.requireStylesheet path.join(__dirname, 'fixtures', 'css')
-      expect(document.querySelector('head style[source-path*="css.css"]').getAttribute('source-path')).toBe atom.themes.stringToId(atom.project.getDirectories()[0]?.resolve('css.css'))
-      atom.themes.requireStylesheet path.join(__dirname, 'fixtures', 'sample')
-      expect(document.querySelector('head style[source-path*="sample.less"]').getAttribute('source-path')).toBe atom.themes.stringToId(atom.project.getDirectories()[0]?.resolve('sample.less'))
+      waitsForPromise -> atom.themes.requireStylesheet path.join(__dirname, 'fixtures', 'css')
+      runs ->
+        expect(document.querySelector('head style[source-path*="css.css"]').getAttribute('source-path')).toBe atom.themes.stringToId(atom.project.getDirectories()[0]?.resolve('css.css'))
 
-      document.querySelector('head style[source-path*="css.css"]').remove()
-      document.querySelector('head style[source-path*="sample.less"]').remove()
+      waitsForPromise -> atom.themes.requireStylesheet path.join(__dirname, 'fixtures', 'sample')
+      runs ->
+        expect(document.querySelector('head style[source-path*="sample.less"]').getAttribute('source-path')).toBe atom.themes.stringToId(atom.project.getDirectories()[0]?.resolve('sample.less'))
+
+        document.querySelector('head style[source-path*="css.css"]').remove()
+        document.querySelector('head style[source-path*="sample.less"]').remove()
 
     it "returns a disposable allowing styles applied by the given path to be removed", ->
       cssPath = require.resolve('./fixtures/css.css')
-
-      expect(getComputedStyle(document.body).fontWeight).not.toBe("bold")
-      disposable = atom.themes.requireStylesheet(cssPath)
-      expect(getComputedStyle(document.body).fontWeight).toBe("bold")
-
-      atom.styles.onDidRemoveStyleElement styleElementRemovedHandler = jasmine.createSpy("styleElementRemovedHandler")
-
-      disposable.dispose()
+      disposable = null
 
       expect(getComputedStyle(document.body).fontWeight).not.toBe("bold")
 
-      expect(styleElementRemovedHandler).toHaveBeenCalled()
+      waitsForPromise ->
+        atom.themes.requireStylesheet(cssPath).then (d) -> disposable = d
 
+      runs ->
+        expect(getComputedStyle(document.body).fontWeight).toBe("bold")
+
+        atom.styles.onDidRemoveStyleElement styleElementRemovedHandler = jasmine.createSpy("styleElementRemovedHandler")
+
+        disposable.dispose()
+
+        expect(getComputedStyle(document.body).fontWeight).not.toBe("bold")
+
+        expect(styleElementRemovedHandler).toHaveBeenCalled()
 
   describe "base style sheet loading", ->
     workspaceElement = null

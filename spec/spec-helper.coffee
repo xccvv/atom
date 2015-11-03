@@ -14,7 +14,8 @@ TokenizedBuffer = require '../src/tokenized-buffer'
 clipboard = require '../src/safe-clipboard'
 
 jasmineStyle = document.createElement('style')
-jasmineStyle.textContent = atom.themes.loadStylesheet(atom.themes.resolveStylesheet('../static/jasmine'))
+atom.themes.loadStylesheetAsync(atom.themes.resolveStylesheet('../static/jasmine')).then (css) ->
+  jasmineStyle.textContent = css
 document.head.appendChild(jasmineStyle)
 
 fixturePackagesPath = path.resolve(__dirname, './fixtures/packages')
