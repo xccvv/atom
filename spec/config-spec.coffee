@@ -589,6 +589,59 @@ describe "Config", ->
       atom.config.transact ->
       expect(changeSpy).not.toHaveBeenCalled()
 
+  describe ".transactAsync(callback)", ->
+    changeSpy = null
+
+    beforeEach ->
+      changeSpy = jasmine.createSpy('onDidChange callback')
+      atom.config.onDidChange("foo.bar.baz", changeSpy)
+
+    it "allows only one change event for the duration of the given promise if it gets resolved", ->
+      promiseResult = null
+      transactionPromise = atom.config.transactAsync ->
+        atom.config.set("foo.bar.baz", 1)
+        atom.config.set("foo.bar.baz", 2)
+        atom.config.set("foo.bar.baz", 3)
+        Promise.resolve("a result")
+
+      waitsForPromise -> transactionPromise.then (r) -> promiseResult = r
+
+      runs ->
+        expect(promiseResult).toBe("a result")
+        expect(changeSpy.callCount).toBe(1)
+        expect(changeSpy.argsForCall[0][0]).toEqual(newValue: 3, oldValue: undefined)
+
+    it "allows only one change event for the duration of the given promise if it gets rejected", ->
+      promiseError = null
+      transactionPromise = atom.config.transactAsync ->
+        atom.config.set("foo.bar.baz", 1)
+        atom.config.set("foo.bar.baz", 2)
+        atom.config.set("foo.bar.baz", 3)
+        Promise.reject("an error")
+
+      waitsForPromise -> transactionPromise.catch (e) -> promiseError = e
+
+      runs ->
+        expect(promiseError).toBe("an error")
+        expect(changeSpy.callCount).toBe(1)
+        expect(changeSpy.argsForCall[0][0]).toEqual(newValue: 3, oldValue: undefined)
+
+    it "allows only one change event even when the given callback throws", ->
+      error = new Error("Oops!")
+      promiseError = null
+      transactionPromise = atom.config.transactAsync ->
+        atom.config.set("foo.bar.baz", 1)
+        atom.config.set("foo.bar.baz", 2)
+        atom.config.set("foo.bar.baz", 3)
+        throw error
+
+      waitsForPromise -> transactionPromise.catch (e) -> promiseError = e
+
+      runs ->
+        expect(promiseError).toBe(error)
+        expect(changeSpy.callCount).toBe(1)
+        expect(changeSpy.argsForCall[0][0]).toEqual(newValue: 3, oldValue: undefined)
+
   describe ".getSources()", ->
     it "returns an array of all of the config's source names", ->
       expect(atom.config.getSources()).toEqual([])
@@ -625,6 +678,26 @@ describe "Config", ->
           expect(CSON.writeFileSync.argsForCall[0][0]).toBe atom.config.configFilePath
           writtenConfig = CSON.writeFileSync.argsForCall[0][1]
           expect(writtenConfig).toEqual '*': atom.config.settings
+
+        it 'writes properties in alphabetical order', ->
+          atom.config.set('foo', 1)
+          atom.config.set('bar', 2)
+          atom.config.set('baz.foo', 3)
+          atom.config.set('baz.bar', 4)
+
+          CSON.writeFileSync.reset()
+          atom.config.save()
+
+          expect(CSON.writeFileSync.argsForCall[0][0]).toBe atom.config.configFilePath
+          writtenConfig = CSON.writeFileSync.argsForCall[0][1]
+          expect(writtenConfig).toEqual '*': atom.config.settings
+
+          expectedKeys = ['bar', 'baz', 'foo']
+          foundKeys = (key for key of writtenConfig['*'] when key in expectedKeys)
+          expect(foundKeys).toEqual expectedKeys
+          expectedKeys = ['bar', 'foo']
+          foundKeys = (key for key of writtenConfig['*']['baz'] when key in expectedKeys)
+          expect(foundKeys).toEqual expectedKeys
 
       describe "when ~/.atom/config.json doesn't exist", ->
         it "writes any non-default properties to ~/.atom/config.cson", ->

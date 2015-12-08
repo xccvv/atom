@@ -28,7 +28,6 @@ class AtomWindow
       title: 'Atom'
       'web-preferences':
         'direct-write': true
-        'subpixel-font-scaling': true
 
     if @isSpec
       options['web-preferences']['page-visibility'] = true
@@ -49,6 +48,7 @@ class AtomWindow
     loadSettings.resourcePath = @resourcePath
     loadSettings.devMode ?= false
     loadSettings.safeMode ?= false
+    loadSettings.atomHome = process.env.ATOM_HOME
 
     # Only send to the first non-spec window created
     if @constructor.includeShellLoadTime and not @isSpec

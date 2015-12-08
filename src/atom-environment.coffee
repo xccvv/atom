@@ -1,5 +1,6 @@
 crypto = require 'crypto'
 path = require 'path'
+ipc = require 'ipc'
 
 _ = require 'underscore-plus'
 {deprecate} = require 'grim'
@@ -116,7 +117,7 @@ class AtomEnvironment extends Model
 
   # Call .loadOrCreate instead
   constructor: (params={}) ->
-    {@applicationDelegate, @window, @document, configDirPath, @enablePersistence} = params
+    {@blobStore, @applicationDelegate, @window, @document, configDirPath, @enablePersistence, onlyLoadBaseStyleSheets} = params
 
     @state = {version: @constructor.version}
 
@@ -150,7 +151,7 @@ class AtomEnvironment extends Model
     @packages = new PackageManager({
       devMode, configDirPath, resourcePath, safeMode, @config, styleManager: @styles,
       commandRegistry: @commands, keymapManager: @keymaps, notificationManager: @notifications,
-      grammarRegistry: @grammars
+      grammarRegistry: @grammars, deserializerManager: @deserializers, viewRegistry: @views
     })
 
     @themes = new ThemeManager({
@@ -182,7 +183,7 @@ class AtomEnvironment extends Model
 
     @themes.loadBaseStylesheets()
     @initialStyleElements = @styles.getSnapshot()
-    @themes.initialLoadComplete = true
+    @themes.initialLoadComplete = true if onlyLoadBaseStyleSheets
     @setBodyPlatformClass()
 
     @stylesElement = @styles.buildStylesElement()
@@ -202,6 +203,15 @@ class AtomEnvironment extends Model
     @installWindowEventHandler()
 
     @observeAutoHideMenuBar()
+
+    checkPortableHomeWritable = ->
+      responseChannel = "check-portable-home-writable-response"
+      ipc.on responseChannel, (response) ->
+        ipc.removeAllListeners(responseChannel)
+        atom.notifications.addWarning("#{response.message.replace(/([\\\.+\\-_#!])/g, '\\$1')}") if not response.writable
+      ipc.send('check-portable-home-writable', responseChannel)
+
+    checkPortableHomeWritable()
 
   setConfigSchema: ->
     @config.setSchema null, {type: 'object', properties: _.clone(require('./config-schema'))}
@@ -306,6 +316,7 @@ class AtomEnvironment extends Model
     @project = null
     @commands.clear()
     @stylesElement.remove()
+    @config.unobserveUserConfig()
 
     @uninstallWindowEventHandler()
 
@@ -612,7 +623,7 @@ class AtomEnvironment extends Model
     @registerDefaultTargetForKeymaps()
 
     @packages.loadPackages()
-
+    @loadStateSync()
     @document.body.appendChild(@views.getView(@workspace))
 
     @watchProjectPath()
@@ -636,6 +647,7 @@ class AtomEnvironment extends Model
     @state.packageStates = @packages.packageStates
     @state.fullScreen = @isFullScreen()
     @saveStateSync()
+    @saveBlobStoreSync()
 
   openInitialEmptyEditorIfNecessary: ->
     return unless @config.get('core.openEmptyEditorOnStart')
@@ -658,8 +670,7 @@ class AtomEnvironment extends Model
       @emitter.emit 'will-throw-error', eventObject
 
       if openDevTools
-        @openDevTools()
-        @executeJavaScriptInDevTools('DevToolsAPI.showConsole()')
+        @openDevTools().then => @executeJavaScriptInDevTools('DevToolsAPI.showConsole()')
 
       @emitter.emit 'did-throw-error', {message, url, line, column, originalError}
 
@@ -709,10 +720,15 @@ class AtomEnvironment extends Model
   ###
 
   # Extended: Open the dev tools for the current window.
+  #
+  # Returns a {Promise} that resolves when the DevTools have been opened.
   openDevTools: ->
     @applicationDelegate.openWindowDevTools()
 
   # Extended: Toggle the visibility of the dev tools for the current window.
+  #
+  # Returns a {Promise} that resolves when the DevTools have been opened or
+  # closed.
   toggleDevTools: ->
     @applicationDelegate.toggleWindowDevTools()
 
@@ -758,6 +774,11 @@ class AtomEnvironment extends Model
 
   showSaveDialogSync: (options={}) ->
     @applicationDelegate.showSaveDialog(options)
+
+  saveBlobStoreSync: ->
+    return unless @enablePersistence
+
+    @blobStore.save()
 
   saveStateSync: ->
     return unless @enablePersistence
@@ -863,6 +884,8 @@ class AtomEnvironment extends Model
           @project.addPath(path.dirname(pathToOpen))
         else
           @project.addPath(pathToOpen)
+
+      @applicationDelegate.addRecentDocument(pathToOpen)
 
       unless fs.isDirectorySync(pathToOpen)
         @workspace?.open(pathToOpen, {initialLine, initialColumn})

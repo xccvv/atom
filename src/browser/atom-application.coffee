@@ -82,6 +82,7 @@ class AtomApplication
     @listenForArgumentsFromNewProcess()
     @setupJavaScriptArguments()
     @handleEvents()
+    @setupDockMenu()
     @storageFolder = new StorageFolder(process.env.ATOM_HOME)
 
     if options.pathsToOpen?.length > 0 or options.urlsToOpen?.length > 0 or options.test
@@ -280,6 +281,16 @@ class AtomApplication
     ipc.on 'write-to-stderr', (event, output) ->
       process.stderr.write(output)
 
+    ipc.on 'add-recent-document', (event, filename) ->
+      app.addRecentDocument(filename)
+
+  setupDockMenu: ->
+    if process.platform is 'darwin'
+      dockMenu = Menu.buildFromTemplate [
+        {label: 'New Window',  click: => @emit('application:new-window')}
+      ]
+      app.dock.setMenu dockMenu
+
   # Public: Executes the given command.
   #
   # If it isn't handled globally, delegate to the currently focused window.
@@ -373,6 +384,8 @@ class AtomApplication
   #   :windowDimensions - Object with height and width keys.
   #   :window - {AtomWindow} to open file paths in.
   openPaths: ({pathsToOpen, executedFrom, pidToKillWhenClosed, newWindow, devMode, safeMode, windowDimensions, profileStartup, window}={}) ->
+    devMode = Boolean(devMode)
+    safeMode = Boolean(safeMode)
     locationsToOpen = (@locationForPathToOpen(pathToOpen, executedFrom) for pathToOpen in pathsToOpen)
     pathsToOpen = (locationToOpen.pathToOpen for locationToOpen in locationsToOpen)
 
@@ -496,7 +509,7 @@ class AtomApplication
   #   :specPath - The directory to load specs from.
   #   :safeMode - A Boolean that, if true, won't run specs from ~/.atom/packages
   #               and ~/.atom/dev/packages, defaults to false.
-  runTests: ({headless, devMode, resourcePath, executedFrom, pathsToOpen, logFile, safeMode, timeout}) ->
+  runTests: ({headless, resourcePath, executedFrom, pathsToOpen, logFile, safeMode, timeout}) ->
     if resourcePath isnt @resourcePath and not fs.existsSync(resourcePath)
       resourcePath = @resourcePath
 
@@ -523,6 +536,7 @@ class AtomApplication
 
     legacyTestRunnerPath = @resolveLegacyTestRunnerPath()
     testRunnerPath = @resolveTestRunnerPath(testPaths[0])
+    devMode = true
     isSpec = true
     safeMode ?= false
     new AtomWindow({windowInitializationScript, resourcePath, headless, isSpec, devMode, testRunnerPath, legacyTestRunnerPath, testPaths, logFile, safeMode})

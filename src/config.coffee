@@ -381,8 +381,8 @@ class Config
   # ```
   #
   # * `keyPath` {String} name of the key to observe
-  # * `options` {Object}
-  #   * `scopeDescriptor` (optional) {ScopeDescriptor} describing a path from
+  # * `options` (optional) {Object}
+  #   * `scope` (optional) {ScopeDescriptor} describing a path from
   #     the root of the syntax tree to a token. Get one by calling
   #     {editor.getLastCursor().getScopeDescriptor()}. See {::get} for examples.
   #     See [the scopes docs](https://atom.io/docs/latest/behind-atom-scoped-settings-scopes-and-scope-descriptors)
@@ -412,8 +412,8 @@ class Config
   #
   # * `keyPath` (optional) {String} name of the key to observe. Must be
   #   specified if `scopeDescriptor` is specified.
-  # * `optional` (optional) {Object}
-  #   * `scopeDescriptor` (optional) {ScopeDescriptor} describing a path from
+  # * `options` (optional) {Object}
+  #   * `scope` (optional) {ScopeDescriptor} describing a path from
   #     the root of the syntax tree to a token. Get one by calling
   #     {editor.getLastCursor().getScopeDescriptor()}. See {::get} for examples.
   #     See [the scopes docs](https://atom.io/docs/latest/behind-atom-scoped-settings-scopes-and-scope-descriptors)
@@ -422,7 +422,6 @@ class Config
   #   * `event` {Object}
   #     * `newValue` the new value of the key
   #     * `oldValue` the prior value of the key.
-  #     * `keyPath` the keyPath of the changed key
   #
   # Returns a {Disposable} with the following keys on which you can call
   # `.dispose()` to unsubscribe.
@@ -672,16 +671,46 @@ class Config
   #
   # * `callback` {Function} to execute while suppressing calls to handlers.
   transact: (callback) ->
-    @transactDepth++
+    @beginTransaction()
     try
       callback()
     finally
-      @transactDepth--
-      @emitChangeEvent()
+      @endTransaction()
 
   ###
   Section: Internal methods used by core
   ###
+
+  # Private: Suppress calls to handler functions registered with {::onDidChange}
+  # and {::observe} for the duration of the {Promise} returned by `callback`.
+  # After the {Promise} is either resolved or rejected, handlers will be called
+  # once if the value for their key-path has changed.
+  #
+  # * `callback` {Function} that returns a {Promise}, which will be executed
+  #   while suppressing calls to handlers.
+  #
+  # Returns a {Promise} that is either resolved or rejected according to the
+  # `{Promise}` returned by `callback`. If `callback` throws an error, a
+  # rejected {Promise} will be returned instead.
+  transactAsync: (callback) ->
+    @beginTransaction()
+    try
+      endTransaction = (fn) => (args...) =>
+        @endTransaction()
+        fn(args...)
+      result = callback()
+      new Promise (resolve, reject) ->
+        result.then(endTransaction(resolve)).catch(endTransaction(reject))
+    catch error
+      @endTransaction()
+      Promise.reject(error)
+
+  beginTransaction: ->
+    @transactDepth++
+
+  endTransaction: ->
+    @transactDepth--
+    @emitChangeEvent()
 
   pushAtKeyPath: (keyPath, value) ->
     arrayValue = @get(keyPath) ? []
@@ -798,6 +827,7 @@ class Config
 
     allSettings = {'*': @settings}
     allSettings = _.extend allSettings, @scopedSettingsStore.propertiesForSource(@getUserConfigPath())
+    allSettings = sortObject(allSettings)
     try
       CSON.writeFileSync(@configFilePath, allSettings)
     catch error
@@ -1160,6 +1190,13 @@ Config.addSchemaEnforcers
 
 isPlainObject = (value) ->
   _.isObject(value) and not _.isArray(value) and not _.isFunction(value) and not _.isString(value) and not (value instanceof Color)
+
+sortObject = (value) ->
+  return value unless isPlainObject(value)
+  result = {}
+  for key in Object.keys(value).sort()
+    result[key] = sortObject(value[key])
+  result
 
 withoutEmptyObjects = (object) ->
   resultObject = undefined
