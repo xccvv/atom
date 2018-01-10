@@ -27,7 +27,7 @@ class PaneElement extends HTMLElement
 
   subscribeToDOMEvents: ->
     handleFocus = (event) =>
-      @model.focus()
+      @model.focus() unless @isActivating or @model.isDestroyed() or @contains(event.relatedTarget)
       if event.target is this and view = @getActiveView()
         view.focus()
         event.stopPropagation()
@@ -66,7 +66,9 @@ class PaneElement extends HTMLElement
   getModel: -> @model
 
   activated: ->
-    @focus()
+    @isActivating = true
+    @focus() unless @hasFocus() # Don't steal focus from children.
+    @isActivating = false
 
   activeStatusChanged: (active) ->
     if active
@@ -77,6 +79,7 @@ class PaneElement extends HTMLElement
   activeItemChanged: (item) ->
     delete @dataset.activeItemName
     delete @dataset.activeItemPath
+    @changePathDisposable?.dispose()
 
     return unless item?
 
@@ -86,6 +89,12 @@ class PaneElement extends HTMLElement
     if itemPath = item.getPath?()
       @dataset.activeItemName = path.basename(itemPath)
       @dataset.activeItemPath = itemPath
+
+      if item.onDidChangePath?
+        @changePathDisposable = item.onDidChangePath =>
+          itemPath = item.getPath()
+          @dataset.activeItemName = path.basename(itemPath)
+          @dataset.activeItemPath = itemPath
 
     unless @itemViews.contains(itemView)
       @itemViews.appendChild(itemView)
@@ -117,6 +126,7 @@ class PaneElement extends HTMLElement
 
   paneDestroyed: ->
     @subscriptions.dispose()
+    @changePathDisposable?.dispose()
 
   flexScaleChanged: (flexScale) ->
     @style.flexGrow = flexScale

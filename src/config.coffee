@@ -1,10 +1,10 @@
 _ = require 'underscore-plus'
 fs = require 'fs-plus'
-{CompositeDisposable, Disposable, Emitter} = require 'event-kit'
+{Emitter} = require 'event-kit'
 CSON = require 'season'
 path = require 'path'
 async = require 'async'
-pathWatcher = require 'pathwatcher'
+{watchPath} = require './path-watcher'
 {
   getValueAtKeyPath, setValueAtKeyPath, deleteValueAtKeyPath,
   pushKeyPath, splitKeyPath,
@@ -80,7 +80,7 @@ ScopeDescriptor = require './scope-descriptor'
 #   # ...
 # ```
 #
-# See [package docs](https://atom.io/docs/latest/hacking-atom-package-word-count) for
+# See [package docs](http://flight-manual.atom.io/hacking-atom/sections/package-word-count/) for
 # more info.
 #
 # ## Config Schemas
@@ -203,22 +203,6 @@ ScopeDescriptor = require './scope-descriptor'
 #       maximum: 11.5
 # ```
 #
-# #### object
-#
-# Value must be an object. This allows you to nest config options. Sub options
-# must be under a `properties key`
-#
-# ```coffee
-# config:
-#   someSetting:
-#     type: 'object'
-#     properties:
-#       myChildIntOption:
-#         type: 'integer'
-#         minimum: 1.5
-#         maximum: 11.5
-# ```
-#
 # #### color
 #
 # Values will be coerced into a {Color} with `red`, `green`, `blue`, and `alpha`
@@ -234,13 +218,34 @@ ScopeDescriptor = require './scope-descriptor'
 #     default: 'white'
 # ```
 #
+# #### object / Grouping other types
+#
+# A config setting with the type `object` allows grouping a set of config
+# settings. The group will be visually separated and has its own group headline.
+# The sub options must be listed under a `properties` key.
+#
+# ```coffee
+# config:
+#   someSetting:
+#     type: 'object'
+#     properties:
+#       myChildIntOption:
+#         type: 'integer'
+#         minimum: 1.5
+#         maximum: 11.5
+# ```
+#
 # ### Other Supported Keys
 #
 # #### enum
 #
-# All types support an `enum` key. The enum key lets you specify all values
-# that the config setting can possibly be. `enum` _must_ be an array of values
-# of your specified type. Schema:
+# All types support an `enum` key, which lets you specify all the values the
+# setting can take. `enum` may be an array of allowed values (of the specified
+# type), or an array of objects with `value` and `description` properties, where
+# the `value` is an allowed value, and the `description` is a descriptive string
+# used in the settings view.
+#
+# In this example, the setting must be one of the 4 integers:
 #
 # ```coffee
 # config:
@@ -248,6 +253,20 @@ ScopeDescriptor = require './scope-descriptor'
 #     type: 'integer'
 #     default: 4
 #     enum: [2, 4, 6, 8]
+# ```
+#
+# In this example, the setting must be either 'foo' or 'bar', which are
+# presented using the provided descriptions in the settings pane:
+#
+# ```coffee
+# config:
+#   someSetting:
+#     type: 'string'
+#     default: 'foo'
+#     enum: [
+#       {value: 'foo', description: 'Foo mode. You want this.'}
+#       {value: 'bar', description: 'Bar mode. Nobody wants that!'}
+#     ]
 # ```
 #
 # Usage:
@@ -274,6 +293,9 @@ ScopeDescriptor = require './scope-descriptor'
 #
 # Descriptions will be displayed below the title in the settings view.
 #
+# For a group of config settings the humanized key or the title and the
+# description are used for the group headline.
+#
 # ```coffee
 # config:
 #   someSetting:
@@ -296,6 +318,48 @@ ScopeDescriptor = require './scope-descriptor'
 # * `code spans` - `\`code spans\``
 # * line breaks - `line breaks<br/>`
 # * ~~strikethrough~~ - `~~strikethrough~~`
+#
+# #### order
+#
+# The settings view orders your settings alphabetically. You can override this
+# ordering with the order key.
+#
+# ```coffee
+# config:
+#   zSetting:
+#     type: 'integer'
+#     default: 4
+#     order: 1
+#   aSetting:
+#     type: 'integer'
+#     default: 4
+#     order: 2
+# ```
+#
+# ## Manipulating values outside your configuration schema
+#
+# It is possible to manipulate(`get`, `set`, `observe` etc) values that do not
+# appear in your configuration schema. For example, if the config schema of the
+# package 'some-package' is
+#
+# ```coffee
+# config:
+# someSetting:
+#   type: 'boolean'
+#   default: false
+# ```
+#
+# You can still do the following
+#
+# ```coffee
+# let otherSetting  = atom.config.get('some-package.otherSetting')
+# atom.config.set('some-package.stillAnotherSetting', otherSetting * 5)
+# ```
+#
+# In other words, if a function asks for a `key-path`, that path doesn't have to
+# be described in the config schema for the package or any package. However, as
+# highlighted in the best practices section, you are advised against doing the
+# above.
 #
 # ## Best practices
 #
@@ -334,11 +398,16 @@ class Config
     value
 
   # Created during initialization, available as `atom.config`
-  constructor: ({@configDirPath, @resourcePath, @notificationManager, @enablePersistence}={}) ->
+  constructor: ({@notificationManager, @enablePersistence}={}) ->
+    @clear()
+
+  initialize: ({@configDirPath, @resourcePath, projectHomeSchema}) ->
     if @enablePersistence?
       @configFilePath = fs.resolve(@configDirPath, 'config', ['json', 'cson'])
       @configFilePath ?= path.join(@configDirPath, 'config.cson')
-    @clear()
+
+    @schema.properties.core.properties.projectHome = projectHomeSchema
+    @defaultSettings.core.projectHome = projectHomeSchema.default
 
   clear: ->
     @emitter = new Emitter
@@ -348,17 +417,25 @@ class Config
     @defaultSettings = {}
     @settings = {}
     @scopedSettingsStore = new ScopedPropertyStore
+
+    @settingsLoaded = false
+    @savePending = false
     @configFileHasErrors = false
     @transactDepth = 0
-    @savePending = false
-    @requestLoad = _.debounce(@loadUserConfig, 100)
-    @requestSave = =>
-      @savePending = true
-      debouncedSave.call(this)
-    save = =>
+    @pendingOperations = []
+    @legacyScopeAliases = {}
+
+    @requestLoad = _.debounce =>
+      @loadUserConfig()
+    , 100
+
+    debouncedSave = _.debounce =>
       @savePending = false
       @save()
-    debouncedSave = _.debounce(save, 100)
+    , 100
+    @requestSave = =>
+      @savePending = true
+      debouncedSave()
 
   shouldNotAccessFileSystem: -> not @enablePersistence
 
@@ -385,7 +462,7 @@ class Config
   #   * `scope` (optional) {ScopeDescriptor} describing a path from
   #     the root of the syntax tree to a token. Get one by calling
   #     {editor.getLastCursor().getScopeDescriptor()}. See {::get} for examples.
-  #     See [the scopes docs](https://atom.io/docs/latest/behind-atom-scoped-settings-scopes-and-scope-descriptors)
+  #     See [the scopes docs](http://flight-manual.atom.io/behind-atom/sections/scoped-settings-scopes-and-scope-descriptors/)
   #     for more information.
   # * `callback` {Function} to call when the value of the key changes.
   #   * `value` the new value of the key
@@ -416,7 +493,7 @@ class Config
   #   * `scope` (optional) {ScopeDescriptor} describing a path from
   #     the root of the syntax tree to a token. Get one by calling
   #     {editor.getLastCursor().getScopeDescriptor()}. See {::get} for examples.
-  #     See [the scopes docs](https://atom.io/docs/latest/behind-atom-scoped-settings-scopes-and-scope-descriptors)
+  #     See [the scopes docs](http://flight-manual.atom.io/behind-atom/sections/scoped-settings-scopes-and-scope-descriptors/)
   #     for more information.
   # * `callback` {Function} to call when the value of the key changes.
   #   * `event` {Object}
@@ -493,7 +570,7 @@ class Config
   #   * `scope` (optional) {ScopeDescriptor} describing a path from
   #     the root of the syntax tree to a token. Get one by calling
   #     {editor.getLastCursor().getScopeDescriptor()}
-  #     See [the scopes docs](https://atom.io/docs/latest/behind-atom-scoped-settings-scopes-and-scope-descriptors)
+  #     See [the scopes docs](http://flight-manual.atom.io/behind-atom/sections/scoped-settings-scopes-and-scope-descriptors/)
   #     for more information.
   #
   # Returns the value from Atom's default settings, the user's configuration
@@ -522,12 +599,23 @@ class Config
   #  * `scopeDescriptor` The {ScopeDescriptor} with which the value is associated
   #  * `value` The value for the key-path
   getAll: (keyPath, options) ->
-    {scope, sources} = options if options?
-    result = []
+    {scope} = options if options?
 
     if scope?
       scopeDescriptor = ScopeDescriptor.fromObject(scope)
-      result = result.concat @scopedSettingsStore.getAll(scopeDescriptor.getScopeChain(), keyPath, options)
+      result = @scopedSettingsStore.getAll(
+        scopeDescriptor.getScopeChain(),
+        keyPath,
+        options
+      )
+      if legacyScopeDescriptor = @getLegacyScopeDescriptor(scopeDescriptor)
+        result.push(@scopedSettingsStore.getAll(
+          legacyScopeDescriptor.getScopeChain(),
+          keyPath,
+          options
+        )...)
+    else
+      result = []
 
     if globalValue = @getRawValue(keyPath, options)
       result.push(scopeSelector: '*', value: globalValue)
@@ -568,7 +656,7 @@ class Config
   #   setting to the default value.
   # * `options` (optional) {Object}
   #   * `scopeSelector` (optional) {String}. eg. '.source.ruby'
-  #     See [the scopes docs](https://atom.io/docs/latest/behind-atom-scoped-settings-scopes-and-scope-descriptors)
+  #     See [the scopes docs](http://flight-manual.atom.io/behind-atom/sections/scoped-settings-scopes-and-scope-descriptors/)
   #     for more information.
   #   * `source` (optional) {String} The name of a file with which the setting
   #     is associated. Defaults to the user's config file.
@@ -578,6 +666,10 @@ class Config
   # * `false` if the value was not able to be coerced to the type specified in the setting's schema.
   set: ->
     [keyPath, value, options] = arguments
+
+    unless @settingsLoaded
+      @pendingOperations.push => @set.call(this, keyPath, value, options)
+
     scopeSelector = options?.scopeSelector
     source = options?.source
     shouldSave = options?.save ? true
@@ -598,7 +690,8 @@ class Config
     else
       @setRawValue(keyPath, value)
 
-    @requestSave() if source is @getUserConfigPath() and shouldSave and not @configFileHasErrors
+    if source is @getUserConfigPath() and shouldSave and not @configFileHasErrors and @settingsLoaded
+      @requestSave()
     true
 
   # Essential: Restore the setting at `keyPath` to its default value.
@@ -608,6 +701,9 @@ class Config
   #   * `scopeSelector` (optional) {String}. See {::set}
   #   * `source` (optional) {String}. See {::set}
   unset: (keyPath, options) ->
+    unless @settingsLoaded
+      @pendingOperations.push => @unset.call(this, keyPath, options)
+
     {scopeSelector, source} = options ? {}
     source ?= @getUserConfigPath()
 
@@ -619,7 +715,8 @@ class Config
           setValueAtKeyPath(settings, keyPath, undefined)
           settings = withoutEmptyObjects(settings)
           @set(null, settings, {scopeSelector, source, priority: @priorityForSource(source)}) if settings?
-          @requestSave()
+          if source is @getUserConfigPath() and not @configFileHasErrors and @settingsLoaded
+            @requestSave()
       else
         @scopedSettingsStore.removePropertiesForSourceAndSelector(source, scopeSelector)
         @emitChangeEvent()
@@ -676,6 +773,12 @@ class Config
       callback()
     finally
       @endTransaction()
+
+  addLegacyScopeAlias: (languageId, legacyScopeName) ->
+    @legacyScopeAliases[languageId] = legacyScopeName
+
+  removeLegacyScopeAlias: (languageId) ->
+    delete @legacyScopeAliases[languageId]
 
   ###
   Section: Internal methods used by core
@@ -746,10 +849,11 @@ class Config
         properties[key] ?= {}
         rootSchema = properties[key]
 
-    _.extend rootSchema, schema
-    @setDefaults(keyPath, @extractDefaultsFromSchema(schema))
-    @setScopedDefaultsFromSchema(keyPath, schema)
-    @resetSettingsForSchemaChange()
+    Object.assign rootSchema, schema
+    @transact =>
+      @setDefaults(keyPath, @extractDefaultsFromSchema(schema))
+      @setScopedDefaultsFromSchema(keyPath, schema)
+      @resetSettingsForSchemaChange()
 
   load: ->
     @initializeConfigDirectory()
@@ -774,20 +878,31 @@ class Config
       relativePath = sourcePath.substring(templateConfigDirPath.length + 1)
       destinationPath = path.join(@configDirPath, relativePath)
       queue.push({sourcePath, destinationPath})
-    fs.traverseTree(templateConfigDirPath, onConfigDirFile, (path) -> true)
+    fs.traverseTree(templateConfigDirPath, onConfigDirFile, ((path) -> true), (->))
 
   loadUserConfig: ->
     return if @shouldNotAccessFileSystem()
-
-    unless fs.existsSync(@configFilePath)
-      fs.makeTreeSync(path.dirname(@configFilePath))
-      CSON.writeFileSync(@configFilePath, {})
+    return if @savePending
 
     try
-      unless @savePending
-        userConfig = CSON.readFileSync(@configFilePath)
-        @resetUserSettings(userConfig)
-        @configFileHasErrors = false
+      unless fs.existsSync(@configFilePath)
+        fs.makeTreeSync(path.dirname(@configFilePath))
+        CSON.writeFileSync(@configFilePath, {}, {flag: 'wx'}) # fails if file exists
+    catch error
+      if error.code isnt 'EEXIST'
+        @configFileHasErrors = true
+        @notifyFailure("Failed to initialize `#{path.basename(@configFilePath)}`", error.stack)
+        return
+
+    try
+      userConfig = CSON.readFileSync(@configFilePath)
+      userConfig = {} if userConfig is null
+
+      unless isPlainObject(userConfig)
+        throw new Error("`#{path.basename(@configFilePath)}` must contain valid JSON or CSON")
+
+      @resetUserSettings(userConfig)
+      @configFileHasErrors = false
     catch error
       @configFileHasErrors = true
       message = "Failed to load `#{path.basename(@configFilePath)}`"
@@ -805,8 +920,10 @@ class Config
     return if @shouldNotAccessFileSystem()
 
     try
-      @watchSubscription ?= pathWatcher.watch @configFilePath, (eventType) =>
-        @requestLoad() if eventType is 'change' and @watchSubscription?
+      @watchSubscriptionPromise ?= watchPath @configFilePath, {}, (events) =>
+        for {action} in events
+          if action in ['created', 'modified', 'renamed'] and @watchSubscriptionPromise?
+            @requestLoad()
     catch error
       @notifyFailure """
         Unable to watch path: `#{path.basename(@configFilePath)}`. Make sure you have permissions to
@@ -815,18 +932,20 @@ class Config
         [watches]:https://github.com/atom/atom/blob/master/docs/build-instructions/linux.md#typeerror-unable-to-watch-path
       """
 
+    @watchSubscriptionPromise
+
   unobserveUserConfig: ->
-    @watchSubscription?.close()
-    @watchSubscription = null
+    @watchSubscriptionPromise?.then (watcher) -> watcher?.dispose()
+    @watchSubscriptionPromise = null
 
   notifyFailure: (errorMessage, detail) ->
-    @notificationManager.addError(errorMessage, {detail, dismissable: true})
+    @notificationManager?.addError(errorMessage, {detail, dismissable: true})
 
   save: ->
     return if @shouldNotAccessFileSystem()
 
     allSettings = {'*': @settings}
-    allSettings = _.extend allSettings, @scopedSettingsStore.propertiesForSource(@getUserConfigPath())
+    allSettings = Object.assign allSettings, @scopedSettingsStore.propertiesForSource(@getUserConfigPath())
     allSettings = sortObject(allSettings)
     try
       CSON.writeFileSync(@configFilePath, allSettings)
@@ -840,11 +959,6 @@ class Config
   ###
 
   resetUserSettings: (newSettings) ->
-    unless isPlainObject(newSettings)
-      @settings = {}
-      @emitChangeEvent()
-      return
-
     if newSettings.global?
       newSettings['*'] = newSettings.global
       delete newSettings.global
@@ -857,8 +971,11 @@ class Config
 
     @transact =>
       @settings = {}
+      @settingsLoaded = true
       @set(key, value, save: false) for key, value of newSettings
-      return
+      if @pendingOperations.length
+        op() for op in @pendingOperations
+        @pendingOperations = []
 
   getRawValue: (keyPath, options) ->
     unless options?.excludeSources?.indexOf(@getUserConfigPath()) >= 0
@@ -914,9 +1031,10 @@ class Config
   setDefaults: (keyPath, defaults) ->
     if defaults? and isPlainObject(defaults)
       keys = splitKeyPath(keyPath)
-      for key, childValue of defaults
-        continue unless defaults.hasOwnProperty(key)
-        @setDefaults(keys.concat([key]).join('.'), childValue)
+      @transact =>
+        for key, childValue of defaults
+          continue unless defaults.hasOwnProperty(key)
+          @setDefaults(keys.concat([key]).join('.'), childValue)
     else
       try
         defaults = @makeValueConformToSchema(keyPath, defaults)
@@ -999,7 +1117,6 @@ class Config
   resetSettingsForSchemaChange: (source=@getUserConfigPath()) ->
     @transact =>
       @settings = @makeValueConformToSchema(null, @settings, suppressException: true)
-      priority = @priorityForSource(source)
       selectorsAndSettings = @scopedSettingsStore.propertiesForSource(source)
       @scopedSettingsStore.removePropertiesForSource(source)
       for scopeSelector, settings of selectorsAndSettings
@@ -1046,7 +1163,20 @@ class Config
 
   getRawScopedValue: (scopeDescriptor, keyPath, options) ->
     scopeDescriptor = ScopeDescriptor.fromObject(scopeDescriptor)
-    @scopedSettingsStore.getPropertyValue(scopeDescriptor.getScopeChain(), keyPath, options)
+    result = @scopedSettingsStore.getPropertyValue(
+      scopeDescriptor.getScopeChain(),
+      keyPath,
+      options
+    )
+
+    if result?
+      result
+    else if legacyScopeDescriptor = @getLegacyScopeDescriptor(scopeDescriptor)
+      @scopedSettingsStore.getPropertyValue(
+        legacyScopeDescriptor.getScopeChain(),
+        keyPath,
+        options
+      )
 
   observeScopedKeyPath: (scope, keyPath, callback) ->
     callback(@get(keyPath, {scope}))
@@ -1060,6 +1190,13 @@ class Config
         event = {oldValue, newValue}
         oldValue = newValue
         callback(event)
+
+  getLegacyScopeDescriptor: (scopeDescriptor) ->
+    legacyAlias = @legacyScopeAliases[scopeDescriptor.scopes[0]]
+    if legacyAlias
+      scopes = scopeDescriptor.scopes.slice()
+      scopes[0] = legacyAlias
+      new ScopeDescriptor({scopes})
 
 # Base schema enforcers. These will coerce raw input into the specified type,
 # and will throw an error when the value cannot be coerced. Throwing the error
@@ -1180,6 +1317,11 @@ Config.addSchemaEnforcers
 
     validateEnum: (keyPath, value, schema) ->
       possibleValues = schema.enum
+
+      if Array.isArray(possibleValues)
+        possibleValues = possibleValues.map (value) ->
+          if value.hasOwnProperty('value') then value.value else value
+
       return value unless possibleValues? and Array.isArray(possibleValues) and possibleValues.length
 
       for possibleValue in possibleValues
